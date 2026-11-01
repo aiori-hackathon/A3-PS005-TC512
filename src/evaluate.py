@@ -683,11 +683,31 @@ def main() -> None:
         policy="secondary_high_medium",
     )
 
-    # Write all alerts to reports/alerts.jsonl
-    alerts_file = out_dir / "alerts.jsonl"
-    with alerts_file.open("w", encoding="utf-8") as f:
+    # Write baseline alerts to reports/baseline_alerts.jsonl
+    baseline_alerts_file = out_dir / "baseline_alerts.jsonl"
+    with baseline_alerts_file.open("w", encoding="utf-8") as f:
         for a in all_alerts:
             f.write(json.dumps(a.to_dict()) + "\n")
+
+    # Only write to reports/alerts.jsonl if it does not already contain explainable ML alerts
+    alerts_file = out_dir / "alerts.jsonl"
+    should_write_alerts = True
+    if alerts_file.exists():
+        try:
+            with alerts_file.open("r", encoding="utf-8") as af:
+                for line in af:
+                    if line.strip():
+                        rec = json.loads(line)
+                        if rec.get("detector") == "ml":
+                            should_write_alerts = False
+                            break
+        except Exception:
+            should_write_alerts = True
+
+    if should_write_alerts:
+        with alerts_file.open("w", encoding="utf-8") as f:
+            for a in all_alerts:
+                f.write(json.dumps(a.to_dict()) + "\n")
 
     # Write wall-clock timings to a separate file (reports/baseline_timing.json) so evaluate does not dirty baseline_metrics.json
     timing_file = out_dir / "baseline_timing.json"
