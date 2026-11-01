@@ -10,14 +10,20 @@ Strict Rule Precedence:
    - Announcement for inventory prefix where origin is authorized in inventory AND
      ROV state is Valid (within ROA maxLength).
    - Benign external routes outside operator inventory with Valid or NotFound ROV state.
-3. Precedence 1: ORIGIN_HIJACK (High Severity)
+3. Precedence 1: ORIGIN_HIJACK (High Severity, or Low Severity if NoSnapshot)
    - Condition: Exact match on inventory prefix, origin ASN is NOT in inventory allowed set,
      AND ROV state is Invalid/NotFound (or NoSnapshot).
    - Genuine unauthorized origin hijack of an operator-owned prefix.
-4. Precedence 2: SUBPREFIX_HIJACK (High Severity)
+   - NoSnapshot handling: If ROV state is NoSnapshot (e.g. announcement timestamp precedes
+     the earliest available ROA snapshot), cryptographic validation cannot be evaluated.
+     To avoid false high-severity escalations without cryptographic evidence, the alert severity
+     is reduced to 'low' with reason: 'ROV could not be evaluated: no ROA snapshot at or before this time'.
+4. Precedence 2: SUBPREFIX_HIJACK (High Severity, or Low Severity if NoSnapshot)
    - Condition: Announced prefix is a more-specific (subprefix) of an inventory or ROA prefix,
-     origin ASN is NOT in inventory allowed set, AND ROV state is Invalid/NotFound.
+     origin ASN is NOT in inventory allowed set, AND ROV state is Invalid/NotFound (or NoSnapshot).
    - Genuine unauthorized more-specific hijack.
+   - NoSnapshot handling: Similarly reduced to 'low' severity with reason:
+     'ROV could not be evaluated: no ROA snapshot at or before this time'.
 5. Precedence 3: INVENTORY_MISMATCH (Low Severity)
    - Condition: Prefix is in operator inventory (exact or covering), origin ASN is NOT registered
      in inventory, BUT ROV state is Valid.
@@ -146,32 +152,46 @@ class RuleBasedDetector:
 
         # 1. ORIGIN_HIJACK: Exact inventory prefix announced by unauthorized origin with Invalid/NotFound ROV
         if inv_exact is not None and not origin_in_inventory and not rov_res.is_valid:
+            if rov_res.state == ROVState.NO_SNAPSHOT:
+                severity = "low"
+                reason = "ROV could not be evaluated: no ROA snapshot at or before this time"
+            else:
+                severity = "high"
+                reason = f"Unauthorized origin AS{origin_asn} announced exact inventory prefix (expected ASNs: {sorted(inv_exact.expected_origin_asns)})"
+
             candidate_alert = Alert(
                 alert_id=make_deterministic_alert_id(prefix_str, origin_asn, timestamp),
                 time=timestamp,
                 type="ORIGIN_HIJACK",
                 prefix=prefix_str,
                 origin_asn=origin_asn,
-                severity="high",
+                severity=severity,
                 detector="rules",
                 rov_result=rov_res,
                 inventory_match=inv_exact,
-                reason=f"Unauthorized origin AS{origin_asn} announced exact inventory prefix (expected ASNs: {sorted(inv_exact.expected_origin_asns)})",
+                reason=reason,
             )
 
         # 2. SUBPREFIX_HIJACK: More-specific of inventory prefix announced by unauthorized origin with Invalid/NotFound ROV
         elif is_more_specific and not origin_in_inventory and not rov_res.is_valid:
+            if rov_res.state == ROVState.NO_SNAPSHOT:
+                severity = "low"
+                reason = "ROV could not be evaluated: no ROA snapshot at or before this time"
+            else:
+                severity = "high"
+                reason = f"Subprefix /{prefix.prefixlen} hijacked by unauthorized AS{origin_asn} under parent prefix"
+
             candidate_alert = Alert(
                 alert_id=make_deterministic_alert_id(prefix_str, origin_asn, timestamp),
                 time=timestamp,
                 type="SUBPREFIX_HIJACK",
                 prefix=prefix_str,
                 origin_asn=origin_asn,
-                severity="high",
+                severity=severity,
                 detector="rules",
                 rov_result=rov_res,
                 inventory_match=inv_covering,
-                reason=f"Subprefix /{prefix.prefixlen} hijacked by unauthorized AS{origin_asn} under parent prefix",
+                reason=reason,
             )
 
         # 3. INVENTORY_MISMATCH: ROV Valid per RPKI ROA but origin is NOT registered in operator inventory

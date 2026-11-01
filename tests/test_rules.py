@@ -214,3 +214,22 @@ def test_third_party_invalid_alert(test_setup) -> None:
     assert alert.severity == "low"
     assert "Third-party" in alert.reason
     assert alert.inventory_match is None
+
+
+def test_no_snapshot_alert_low_severity(test_setup) -> None:
+    """Announcements occurring before the earliest available ROA snapshot emit low severity alerts."""
+    from src.rov import ROVState
+
+    detector, t0, _ = test_setup
+    # Earliest snapshot in test_setup is at 2026-10-26T00:00:00Z (1792972800.0)
+    # Announcement at 2026-10-25T23:55:00Z (1792972500.0, 300s prior)
+    t_before = 1792972500.0
+    u_early = BGPUpdate(t_before, ipaddress.ip_network("203.0.113.0/24"), 64498)
+
+    alert = detector.process_update(u_early)
+    assert alert is not None
+    assert alert.type == "ORIGIN_HIJACK"
+    assert alert.severity == "low"
+    assert alert.rov_result is not None
+    assert alert.rov_result.state == ROVState.NO_SNAPSHOT
+    assert alert.reason == "ROV could not be evaluated: no ROA snapshot at or before this time"
