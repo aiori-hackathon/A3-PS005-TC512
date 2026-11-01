@@ -145,12 +145,16 @@ def test_reason_text_present_and_precedence_explained() -> None:
         reason = a.evidence.reason
         assert reason is not None and len(reason.strip()) > 0
         if a.detector == "rules":
-            # Rules alerts must state which rule fired and precedence rationale
-            assert f"so {a.type}" in reason or f"Rule" in reason
+            # Rules alerts must state which rule fired and precedence rationale, or NoSnapshot reason
+            if a.evidence.rfc6811_state == "NoSnapshot":
+                assert reason == "ROV could not be evaluated: no ROA snapshot at or before this time"
+            else:
+                assert f"so {a.type}" in reason or f"Rule" in reason
         elif a.detector == "ml":
-            # ML alerts must state score and threshold
+            # ML alerts must state score and threshold, and note model-sensitivity
             assert "score" in reason.lower()
             assert "threshold" in reason.lower()
+            assert "model-sensitivity" in reason.lower()
 
 
 def test_deterministic_alert_ids() -> None:
@@ -303,3 +307,60 @@ def test_feature_attribution_permutation() -> None:
         assert "contribution" in c
         assert "direction" in c
 
+
+
+def test_ml_score_to_severity_mapping() -> None:
+    """Verify continuous ML anomaly score maps to operational severity bands."""
+    from src.explain import map_ml_score_to_severity
+
+    # High severity: score >= 0.70
+    assert map_ml_score_to_severity(0.70) == "high"
+    assert map_ml_score_to_severity(0.85) == "high"
+    assert map_ml_score_to_severity(0.99) == "high"
+
+    # Medium severity: 0.30 <= score < 0.70
+    assert map_ml_score_to_severity(0.30) == "medium"
+    assert map_ml_score_to_severity(0.50) == "medium"
+    assert map_ml_score_to_severity(0.6999) == "medium"
+
+    # Low severity: score < 0.30
+    assert map_ml_score_to_severity(0.2999) == "low"
+    assert map_ml_score_to_severity(0.05) == "low"
+    assert map_ml_score_to_severity(0.0) == "low"
+
+
+def test_ml_reason_text_structure_and_disclaimer() -> None:
+    """Verify ML reason leads with strongest meaningful signal and notes model-sensitivity."""
+    from src.explain import describe_feature_signal, generate_ml_reason_text
+
+    top3 = [
+        {"feature": "peer_new_for_prefix_origin", "value": 1.0, "contribution": 0.35, "direction": "+"},
+        {"feature": "origin_in_inventory", "value": 0.0, "contribution": 0.25, "direction": "+"},
+        {"feature": "rov_state_encoded", "value": 2.0, "contribution": 0.15, "direction": "+"},
+    ]
+    reason = generate_ml_reason_text(score=0.885, threshold=0.05, top3=top3)
+
+    # Must lead with strongest signal
+    assert reason.startswith("Novel transit peer observed")
+    assert "top signal: peer_new_for_prefix_origin=1, +" in reason
+    # Must include supporting signals
+    assert "origin_in_inventory=0 (+)" in reason
+    # Must state score and threshold
+    assert "0.885" in reason
+    assert "0.050" in reason
+    # Must include model-sensitivity note
+    assert "Note: Feature attributions indicate model-sensitivity" in reason
+    assert "not causal reasons" in reason
+
+
+def test_rules_nosnapshot_alert_handling_in_alerts_file() -> None:
+    """Verify rules alerts occurring prior to earliest snapshot emit low severity and specific reason."""
+    alerts = read_alerts_from_jsonl(ALERTS_FILE)
+    no_snap_alerts = [
+        a for a in alerts
+        if a.detector == "rules" and a.evidence.rfc6811_state == "NoSnapshot"
+    ]
+    assert len(no_snap_alerts) > 0, "Expected at least one NoSnapshot rules alert in alerts.jsonl"
+    for a in no_snap_alerts:
+        assert a.severity == "low", f"NoSnapshot alert {a.alert_id} must have low severity, got {a.severity}"
+        assert a.evidence.reason == "ROV could not be evaluated: no ROA snapshot at or before this time"

@@ -181,6 +181,9 @@ def generate_rule_precedence_reason(
     origin_in_inventory: bool,
 ) -> str:
     """Generate a single plain-English sentence explaining which rule fired and why earlier rules did not."""
+    if rov_state == "NoSnapshot":
+        return "ROV could not be evaluated: no ROA snapshot at or before this time"
+
     if alert_type == "ORIGIN_HIJACK":
         return (
             f"Origin AS{origin_asn} not in inventory for exact prefix {prefix_str}, "
@@ -292,16 +295,19 @@ def explain_rule_alert(
         }
 
     # 4. Strict Precedence Rationale
-    reason = generate_rule_precedence_reason(
-        alert_type=alert.type,
-        prefix_str=prefix_str,
-        origin_asn=origin_asn,
-        rov_state=rov_state_val,
-        invalid_reason=inv_reason,
-        inv_match=inv_item,
-        is_more_specific=is_more_specific,
-        origin_in_inventory=origin_in_inventory,
-    )
+    if rov_state_val == "NoSnapshot" or alert.reason == "ROV could not be evaluated: no ROA snapshot at or before this time":
+        reason = "ROV could not be evaluated: no ROA snapshot at or before this time"
+    else:
+        reason = generate_rule_precedence_reason(
+            alert_type=alert.type,
+            prefix_str=prefix_str,
+            origin_asn=origin_asn,
+            rov_state=rov_state_val,
+            invalid_reason=inv_reason,
+            inv_match=inv_item,
+            is_more_specific=is_more_specific,
+            origin_in_inventory=origin_in_inventory,
+        )
 
     evidence = ExplainableEvidence(
         covering_roas=covering_roas,
@@ -323,6 +329,109 @@ def explain_rule_alert(
         detector="rules",
         evidence=evidence,
         suppressed_count=alert.suppressed_count,
+    )
+
+
+
+def map_ml_score_to_severity(score: float, threshold: float = 0.05) -> str:
+    """Map continuous ML anomaly probability score [0.0, 1.0] to operational severity bands.
+
+    Severity Bands:
+      - 'high':   score >= 0.70  (Strong anomaly confidence; critical operator alert)
+      - 'medium': 0.30 <= score < 0.70 (Moderate anomaly confidence; secondary investigation)
+      - 'low':    score < 0.30   (Low anomaly confidence; above threshold tau*=0.05 but exploratory)
+    """
+    if score >= 0.70:
+        return "high"
+    elif score >= 0.30:
+        return "medium"
+    return "low"
+
+
+def describe_feature_signal(feature_name: str, value: float, direction: str) -> str:
+    """Translate a top-contributing ML feature into a meaningful plain-English signal description."""
+    if feature_name == "rov_state_encoded":
+        val_int = int(round(value))
+        if val_int == 2:
+            return "RPKI ROV state is Invalid (conflicting ROA detected)"
+        elif val_int == 1:
+            return "RPKI ROV state is NotFound (missing ROA protection)"
+        elif val_int == 3:
+            return "RPKI ROV state is NoSnapshot (no snapshot available at update time)"
+        else:
+            return "RPKI ROV state is Valid"
+
+    elif feature_name == "origin_in_inventory":
+        if value < 0.5:
+            return "Origin ASN is NOT authorized in operator prefix inventory"
+        else:
+            return "Origin ASN is authorized in operator prefix inventory"
+
+    elif feature_name == "peer_new_for_prefix_origin":
+        if value > 0.5:
+            return "Novel transit peer observed for prefix-origin pair (first announcement via this peer)"
+        else:
+            return "Known transit peer observed for prefix-origin pair"
+
+    elif feature_name == "origin_new_for_prefix":
+        if value > 0.5:
+            return "Novel origin ASN observed for prefix (first announcement from this origin)"
+        else:
+            return "Known origin ASN observed for prefix"
+
+    elif feature_name == "prefix_len_delta":
+        if value > 0:
+            return f"Subprefix deaggregation detected (announced length is +{int(round(value))} bits longer than parent)"
+        else:
+            return "Prefix length matches parent prefix"
+
+    elif feature_name == "more_specific_first_seen":
+        if value > 0.5:
+            return "Subprefix announced for the first time across observation window"
+        else:
+            return "Subprefix previously observed across observation window"
+
+    elif feature_name == "origin_rarity":
+        return f"Historically rare origin ASN across rolling window (rarity metric: {value:.4g})"
+
+    elif feature_name == "prefix_age_hours":
+        return f"Recently emerged prefix with limited history (first seen {value:.1f} hours ago)"
+
+    elif feature_name == "update_rate_30m":
+        return f"High announcement burst rate ({int(round(value))} updates in past 30 minutes)"
+
+    elif feature_name == "hour_of_day":
+        return f"Announcement timing ({int(round(value))}:00 UTC diurnal window)"
+
+    return f"Observed feature {feature_name} = {value:.4g}"
+
+
+def generate_ml_reason_text(
+    score: float,
+    threshold: float,
+    top3: List[Dict[str, Any]],
+) -> str:
+    """Generate plain-English ML reason leading with the strongest signal and model-sensitivity note."""
+    if not top3:
+        return (
+            f"ML model assigned anomaly score {score:.3f} exceeding threshold {threshold:.3f}. "
+            "Note: Feature attributions indicate model-sensitivity to individual inputs relative to baseline background traffic, not causal reasons."
+        )
+
+    top_f = top3[0]
+    lead_signal = describe_feature_signal(top_f["feature"], top_f["value"], top_f["direction"])
+
+    supporting = [
+        f"{f['feature']}={f['value']:.4g} ({f['direction']})"
+        for f in top3[1:]
+    ]
+    supporting_text = f" Supported by: {', '.join(supporting)}." if supporting else ""
+
+    return (
+        f"{lead_signal} (top signal: {top_f['feature']}={top_f['value']:.4g}, {top_f['direction']})."
+        f"{supporting_text} "
+        f"Model anomaly score: {score:.3f} (operating threshold tau* = {threshold:.3f}). "
+        "Note: Feature attributions indicate model-sensitivity to individual inputs relative to baseline background traffic, not causal reasons."
     )
 
 
@@ -413,12 +522,9 @@ def explain_ml_alert(
             "allowed_origins": sorted(list(inv_item.expected_origin_asns)),
         }
 
-    # 5. Plain-English Reason
-    f_desc = ", ".join(f"{item['feature']} ({item['value']:.4g}, {item['direction']})" for item in top3)
-    reason = (
-        f"ML model assigned anomaly score {score:.3f} exceeding threshold {threshold:.3f}, "
-        f"primarily driven by {f_desc} (non-causal statistical attribution)."
-    )
+    # 5. Plain-English Reason and Score-to-Severity Mapping
+    severity = map_ml_score_to_severity(score, threshold)
+    reason = generate_ml_reason_text(score, threshold, top3)
 
     method_text = (
         "Per-feature contribution against empirical background mean (delta in model output "
@@ -452,7 +558,7 @@ def explain_ml_alert(
         type="ML_ANOMALY",
         prefix=prefix_str,
         origin_asn=origin_asn,
-        severity="high",
+        severity=severity,
         detector="ml",
         evidence=evidence,
         score=round(score, 4),
