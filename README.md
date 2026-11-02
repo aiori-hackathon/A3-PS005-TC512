@@ -1,8 +1,8 @@
 <div align="center">
 
-# 🛰️ Explainable BGP Origin & Subprefix Anomaly Monitor
+# 🛰️ ThirdEye · Explainable BGP Origin & Subprefix Anomaly Monitor
 
-**PS-005 · AIORI-3 Hackathon · Category: Cyber Security**
+**AIORI-3 Hackathon · PS-005 · Category: Cyber Security**
 
 *Replay a BGP feed, validate every announcement against time-aligned RPKI ROAs and an operator prefix inventory, and raise alerts that explain exactly why they fired.*
 
@@ -10,25 +10,37 @@
 ![RFC 6811](https://img.shields.io/badge/RFC-6811%20ROV-0A66C2)
 ![Detectors](https://img.shields.io/badge/Detectors-Rules%20%2B%20GradientBoosting-8A2BE2)
 ![Tests](https://img.shields.io/badge/Tests-92%20passing-2EA44F)
-[![Report PDF](https://img.shields.io/badge/Report-docs%2Freport.pdf-red?logo=adobeacrobatreader)](docs/report.pdf)
+![Offline](https://img.shields.io/badge/Demo-100%25%20offline-0F766E)
 ![Explainable](https://img.shields.io/badge/Alerts-Evidence--based-F59E0B)
-![Scope](https://img.shields.io/badge/Blocking%20%2F%20AS__PATH-Out%20of%20scope-lightgrey)
+[![Report PDF](https://img.shields.io/badge/Report-docs%2Freport.pdf-D64545)](docs/report.pdf)
+
+[**📄 Report**](docs/report.pdf) · [**🎬 Demo script**](docs/demo_script.md) · [**📐 Pseudocode**](docs/pseudocode.md) · [**🚀 Quick start**](#-quick-start)
 
 </div>
 
 ---
 
-## 📌 Table of Contents
+## ⚡ At a glance
+
+| 🎯 Rule baseline F1 | 🤖 ML detector F1 | 🕳️ Forged-origin recall | ✅ Tests |
+|:---:|:---:|:---:|:---:|
+| **0.6957** | **0.9104 ± 0.0087** | rules **0%** → ML **≈ 70%** *(59–81% across 3 seeds)* | **92** passing |
+
+> Every number in this README is produced by code in this repository and saved under `reports/`. The data is **synthetic**, so read the results as *how well each detector separates the scenarios we modelled*, not as real-world accuracy. See [Limitations](#-limitations-stated-plainly).
+
+---
+
+## 📌 Contents
 
 1. [The problem](#-the-problem)
 2. [What we built](#-what-we-built)
-3. [Results at a glance](#-results-at-a-glance)
+3. [Results](#-results)
 4. [Architecture](#-architecture)
 5. [How detection works](#-how-detection-works)
 6. [Data and labelled scenarios](#-data-and-labelled-scenarios)
 7. [Baseline evaluation](#-baseline-evaluation-rule-based)
 8. [ML detector](#-ml-detector-added-after-the-baseline)
-9. [Leakage audit](#-leakage-audit-and-honesty-checks)
+9. [Leakage audit and honesty checks](#-leakage-audit-and-honesty-checks)
 10. [Explainable alerts](#-explainable-alerts)
 11. [Live demonstration](#-live-demonstration)
 12. [Quick start](#-quick-start)
@@ -36,20 +48,21 @@
 14. [Reproducibility](#-reproducibility)
 15. [Limitations](#-limitations-stated-plainly)
 16. [Requirement compliance](#-requirement-compliance)
-17. [References & documentation](#-references--documentation)
+17. [Project journey](#-project-journey)
+18. [References](#-references)
 
 ---
 
 ## 🎯 The problem
 
-BGP was designed without origin verification. Any network can announce prefixes it does not own, by mistake or on purpose. RPKI Route Origin Authorizations (ROAs) sign prefix-to-ASN mappings, but attackers can still win traffic by announcing **more-specific sub-prefixes** that routers prefer over the broader legitimate route. A legitimate origin ASN can even be **forged**, making the announcement look valid to ROV.
+BGP was designed without origin verification: any network can announce prefixes it does not own, by mistake or on purpose. RPKI Route Origin Authorizations (ROAs) sign prefix-to-ASN mappings, but gaps remain:
 
-Operators need a monitor that:
+- **Subprefix hijacks.** Routers prefer the longest match, so a /24 announced inside a legitimate /22 wins traffic, and a loose ROA `maxLength` can even authorise it.
+- **Forged-origin attacks.** The attacker uses the *legitimate* origin ASN, so the announcement is RPKI-Valid and passes inventory checks.
+- **Legitimate change looks like an attack.** Anycast, DDoS-scrubbing providers and policy changes (ROA or inventory lagging an announcement) trigger naive detectors.
+- **Alerts without evidence** cannot be triaged, and **detectors without honest false-positive measurement** cannot be trusted.
 
-- detects **unexpected origins** and **subprefix / more-specific** anomalies,
-- uses **ROA snapshots aligned in time** with the feed (no future data),
-- tells the analyst **why** each announcement was flagged,
-- is measured honestly: precision, recall, alert latency and false positives, including **legitimate** multi-origin and policy-change cases.
+**Scope (per the problem statement):** a rule-based baseline first, then one ML model; **no** automatic route blocking, blackholing or full AS_PATH analysis.
 
 ## 🧩 What we built
 
@@ -59,26 +72,25 @@ Operators need a monitor that:
 | **Time-aligned ROA store** | For an update at time *t*, uses the latest snapshot at or before *t*. A distinct `NoSnapshot` outcome means it never falls back to a later snapshot |
 | **RFC 6811 validator** | `Valid / Invalid / NotFound / NoSnapshot`, with maxLength and AS0 handling and a structured reason for invalidity |
 | **Operator prefix inventory** | Exact and longest-prefix-match lookup, IPv4 and IPv6 |
-| **Rule-based baseline** | Strict rule precedence, so each update produces at most one alert. Deduplication never suppresses a new origin |
-| **Labelled synthetic generator** | Seeded and configurable. Anomalies and hard benign cases, each written to `labels.csv` |
-| **ML detector** | One GradientBoosting model, added only **after** the baseline was evaluated, trained with a strict time split |
-| **Evidence-based alerts** | JSON alerts with covering ROAs, snapshot time, ROV state, inventory match and a plain-English reason |
-| **Evaluation suite** | Event-level one-to-one matching, bootstrap CIs, multi-seed runs, per-scenario recall and false positives |
+| **Rule-based baseline** | Strict precedence, at most one alert per update, deduplication that never suppresses a new origin |
+| **Labelled scenario generator** | Seeded, YAML-configurable; anomalies **and** legitimate hard cases, all written to `labels.csv` |
+| **ML detector** | One GradientBoosting model, added only **after** the baseline was evaluated; past-only features; chronological split |
+| **Evidence-based alerts** | JSON alerts with covering ROAs, snapshot time, ROV state, inventory match, peer and a plain-English reason |
+| **Evaluation suite** | One-to-one event matching, bootstrap CIs, multi-seed runs, per-scenario recall, false positives per benign scenario |
+| **CLI and offline demo** | `explain`, `list-alerts` and a `demo` command that streams alerts live with ground-truth tags |
 
 ---
 
-## 📊 Results at a glance
+## 📊 Results
 
-> All numbers come from code (`src/evaluate.py`, `src/train_ml.py`) and are saved in `reports/`. The data is **synthetic**, so read these as how well each detector separates the scenarios we modelled, not as real-world accuracy.
-
-### Rule baseline (generator v2, 92 labelled events)
+### Rule baseline (baseline dataset: 3,164 updates, 92 labelled events)
 
 | Policy | Event Precision | Event Recall | Event F1 |
 |---|:---:|:---:|:---:|
 | Primary (all operator alert types) | **0.6154** | **0.8000** | **0.6957** |
 | Secondary (high and medium severity only) | 0.7273 | 0.8000 | 0.7619 |
 
-Bootstrap 95% CI (over events, primary): precision 0.526 to 0.708, recall 0.675 to 0.925, F1 0.602 to 0.783.
+Bootstrap 95% CI over events (primary): precision 0.526–0.708 · recall 0.675–0.925 · F1 0.602–0.783.
 
 ### Rules vs ML on the held-out test slice (3 generator seeds, mean ± std)
 
@@ -90,14 +102,22 @@ Bootstrap 95% CI (over events, primary): precision 0.526 to 0.708, recall 0.675 
 | Rules OR ML (primary) | 0.5476 | 0.9183 | 0.6859 | 0.60 ms/update |
 | Rules OR ML (secondary) | 0.6476 | 0.9183 | 0.7593 | 0.60 ms/update |
 
-### The headline finding
+### 🕳️ The headline finding: the forged-origin gap
 
-| Forged-origin more-specific attack (ROV **Valid**, origin **in inventory**) | Recall |
-|---|:---:|
-| Rule baseline | **0.0%** |
-| ML detector | **about 70% (59% to 81% across three seeds)** |
+A forged-origin more-specific is **RPKI-Valid** and the origin is **in the inventory**, so the rules cannot see it by design. The ML detector recovers most of them from feed metadata alone.
 
-Forged-origin attacks pass both RFC 6811 and the inventory check, and detecting them without AS_PATH analysis is inherently hard. The rules cannot see them by design. ML recovers most of them from feed metadata alone (new peer for this prefix and origin, origin rarity, update behaviour) — achieving about 70% (59% to 81% across three seeds; seed 777: 81.0% at $\tau^* = 0.050$, seed 888: 59.1% at $\tau^* = 0.070$, seed 999: 71.4% at $\tau^* = 0.090$) — at a measurable false-positive cost on traffic-engineering events.
+<div align="center">
+  <img src="docs/img/forged_recall.png" alt="Forged-origin recall: rules 0%, ML about 70% across three seeds" width="700">
+</div>
+
+| Seed | Threshold τ\* (chosen on validation) | Forged-origin recall |
+|:---:|:---:|:---:|
+| 777 | 0.05 | 80.95% (17 / 21) |
+| 888 | 0.07 | 59.09% (13 / 22) |
+| 999 | 0.09 | 71.43% (15 / 21) |
+| **Rules** | n/a | **0%** |
+
+**Reading it honestly:** about **70%** across three seeds, with a wide range (59–81%), at a measurable false-positive cost on traffic-engineering events. Detecting forged-origin attacks without AS_PATH analysis is inherently limited.
 
 <div align="center">
   <img src="reports/ml_baseline_hybrid_comparison.png" alt="Baseline vs ML vs Hybrid comparison" width="760">
@@ -108,32 +128,16 @@ Forged-origin attacks pass both RFC 6811 and the inventory check, and detecting 
 
 ## 🏗️ Architecture
 
-```mermaid
-flowchart LR
-    A[BGP feed replay<br/>time-ordered updates] --> N[Normalizer]
-    R[(ROA snapshots<br/>00:00 · 06:00 · 12:00 ...)] --> T[Time-aligned<br/>ROA lookup]
-    I[(Operator prefix<br/>inventory)] --> D
-    N --> T --> V[RFC 6811<br/>validator]
-    V --> D[Rule-based baseline<br/>strict precedence + dedup]
-    N --> F[Past-only feature<br/>extraction]
-    V --> F
-    F --> M[GradientBoosting<br/>time-split model]
-    D --> E[Evidence builder<br/>explain.py]
-    M --> E
-    E --> J[(alerts.jsonl)]
-    J --> C[CLI: explain / list-alerts]
-    G[Seeded scenario generator<br/>+ labels.csv] --> A
-    G --> EV[Evaluator<br/>one-to-one event matching]
-    J --> EV
-    EV --> RP[(metrics · plots · reports)]
-```
+<div align="center">
+  <img src="docs/img/architecture.png" alt="Solution architecture and data flow" width="900">
+</div>
 
 **Design principles**
 
 - **Baseline first.** The ML model was added only after the rule baseline was evaluated and its metrics saved.
-- **No future leakage.** ROA lookup uses snapshots at or before the update time. ML features use past data only. Train, validation and test are split by time.
-- **Explainability by construction.** Every alert carries the data that triggered it.
-- **Honest evaluation.** One-to-one event matching, benign hard cases that *should* trigger false positives, and a leakage audit.
+- **No future leakage.** ROA lookup uses snapshots at or before the update time; ML features use past data only; data is split chronologically.
+- **Explainability by construction.** Evidence is collected while the decision is made, not reconstructed afterwards.
+- **Honest evaluation.** One-to-one event matching, benign hard cases that *should* trigger false positives, a leakage audit, and a preserved audit trail.
 
 ---
 
@@ -146,23 +150,27 @@ flowchart LR
 | **Valid** | At least one covering ROA matches the origin ASN **and** prefix length ≤ maxLength |
 | **Invalid** | Covering ROAs exist but none match (`origin_mismatch`, `length_exceeds_maxlength`, `as0_roa`, or a combination) |
 | **NotFound** | No covering ROA |
-| **NoSnapshot** | No ROA snapshot exists at or before the update time (never falls back to a later snapshot) |
+| **NoSnapshot** | No ROA snapshot exists at or before the update time |
 
-AS0 ROAs can never match. A route covered only by AS0 ROAs is Invalid.
+AS0 ROAs can never match: a route covered only by AS0 ROAs is Invalid. An announcement that precedes the first snapshot is rated **low** severity with the reason *"ROV could not be evaluated: no ROA snapshot at or before this time"*.
 
-### Baseline rule precedence (at most one alert per update)
+### Rule precedence (at most one alert per update)
 
-| Precedence | Alert type | Condition | Severity |
+<div align="center">
+  <img src="docs/img/decision_flow.png" alt="Rule decision flow" width="760">
+</div>
+
+| # | Alert type | Condition | Severity |
 |:---:|---|---|:---:|
-| 0 | *(no alert)* | Withdrawal, or authorized origin with ROV Valid, or background route with Valid / NotFound | none |
+| 0 | *(no alert)* | Withdrawal; authorised origin with ROV Valid; background route with Valid / NotFound | none |
 | 1 | `ORIGIN_HIJACK` | Exact inventory prefix, origin not in inventory, ROV Invalid / NotFound | high |
-| 2 | `SUBPREFIX_HIJACK` | More-specific of an inventory / ROA prefix, unauthorized origin, ROV Invalid / NotFound | high |
-| 3 | `INVENTORY_MISMATCH` | Inventory prefix, origin not in inventory, **but ROV Valid** (config drift, not an attack) | low |
+| 2 | `SUBPREFIX_HIJACK` | More-specific of an inventory / ROA prefix, unauthorised origin, ROV Invalid / NotFound | high |
+| 3 | `INVENTORY_MISMATCH` | Origin not in inventory **but ROV Valid** (configuration drift, not an attack) | low |
 | 4 | `ROA_INVALID` | Origin in inventory but ROV Invalid (ROA lags a policy change) | medium |
 | 5 | `ROA_MISSING` | Inventory-owned prefix with ROV NotFound | low |
-| , | `THIRD_PARTY_INVALID` | RPKI-invalid route **outside** the inventory (internet hygiene noise, reported separately, excluded from operator precision) | low |
+| , | `THIRD_PARTY_INVALID` | RPKI-invalid route **outside** the inventory; reported separately and excluded from operator precision | low |
 
-**Deduplication** is keyed on `(prefix, origin_asn)` within a configurable window. A **new origin on the same prefix is never suppressed**, and the first-seen time is preserved for latency measurement.
+**Deduplication** is keyed on `(prefix, origin_asn)` within a configurable window. A **new origin on the same prefix is never suppressed**, and the first-seen time is kept for latency measurement.
 
 ---
 
@@ -170,21 +178,21 @@ AS0 ROAs can never match. A route covered only by AS0 ROAs is Invalid.
 
 Everything is generated by a seeded, YAML-configurable generator (`src/inject.py`). Every injected event is written to `labels.csv` with its scenario, difficulty and expected alert type.
 
-### Anomalies (`benign = false`)
+**Anomalies (`benign = false`)**
 
 | Scenario | Difficulty | What it models |
 |---|:---:|---|
 | `exact_origin_hijack` | easy | Foreign ASN announces an inventory prefix |
 | `subprefix_hijack` | easy | Foreign ASN announces a more-specific inside an inventory prefix |
 | `hijack_after_roa_change` | hard | Hijack minutes after a ROA snapshot change (tests time alignment) |
-| `loose_maxlength_hijack` | hard | **Forged-origin** more-specific using the legitimate ASN within maxLength (ROV Valid, origin in inventory) |
+| `loose_maxlength_hijack` | hard | **Forged-origin** more-specific: legitimate ASN, within maxLength, ROV Valid |
 
-### Legitimate hard cases (`benign = true`)
+**Legitimate hard cases (`benign = true`)**
 
 | Scenario | What it models |
 |---|---|
-| `multi_origin_anycast` | Two or more legitimate origins, all authorized |
-| `multi_origin_ddos_scrubbing` | Provider ASN authorized by ROA but missing from the inventory |
+| `multi_origin_anycast` | Two or more legitimate, authorised origins |
+| `multi_origin_ddos_scrubbing` | Provider ASN authorised by ROA but missing from the inventory |
 | `policy_change_roa_first` | ROA published before the new origin announces |
 | `policy_change_roa_lag_inventory_updated` | New origin announces before the ROA catches up; inventory is current |
 | `policy_change_roa_lag_inventory_stale` | New origin announces before the ROA catches up; inventory is stale |
@@ -194,10 +202,8 @@ Plus background traffic across many peers and origins, including about 1.5% thir
 
 | Dataset | Purpose | Scale |
 |---|---|---|
-| **Baseline dataset** (`config.yaml`) | Rule baseline evaluation | 3,164 updates · 92 events (40 anomalies, 52 benign) |
-| **ML dataset** (`config_ml.yaml`) | Time-split ML training and comparison | 10× scale, 1,020 labelled events. This is a **scale change, not a scenario change** |
-
-The ML dataset uses its own inventory and ROA snapshots (`data/ml_inventory.csv`, `data/ml_roa_snapshots/`), so the baseline stays reproducible.
+| **Baseline** (`config.yaml`) | Rule baseline evaluation | 3,164 updates · 92 events (40 anomalies, 52 benign) |
+| **ML** (`config_ml.yaml`) | Time-split ML training and comparison | 10× scale · 1,020 labelled events · own inventory and ROA snapshots. A **scale change, not a scenario change** |
 
 ---
 
@@ -210,17 +216,17 @@ Event-level, one-to-one matching of alerts to labelled events. Event-level preci
   <img src="reports/baseline_confusion_matrix.png" alt="Baseline confusion matrix" width="46%">
 </div>
 
-### Recall per anomaly scenario
+**Recall per anomaly scenario**
 
 | Scenario | Difficulty | Recall |
 |---|:---:|:---:|
 | `exact_origin_hijack` | easy | 100% (12/12) |
 | `subprefix_hijack` | easy | 100% (12/12) |
 | `hijack_after_roa_change` | hard | 100% (8/8) |
-| `loose_maxlength_hijack` | hard | **0% (0/8)**, a genuine gap that motivates ML |
+| `loose_maxlength_hijack` | hard | **0% (0/8)** — a genuine gap that motivates the ML model |
 | **Easy / Hard / Overall** | | 100% / 50% / 80% |
 
-### False positives on legitimate scenarios (primary policy)
+**False positives on legitimate scenarios (primary policy)**
 
 | Benign scenario | Events flagged | Alert type |
 |---|:---:|---|
@@ -232,7 +238,7 @@ Event-level, one-to-one matching of alerts to labelled events. Event-level preci
 | `policy_change_roa_lag_inventory_stale` | 6 / 6 | `ORIGIN_HIJACK` (high) |
 | Background operator traffic | 0.0 FP per 1,000 updates | none |
 
-The three hard benign scenarios are flagged **by construction**. They exist to show where ROA and inventory update at different speeds from announcements, so the 61.5% precision reflects our scenario mix, not a real-world false-positive rate.
+The three hard benign scenarios are flagged **by construction**: they show where ROA and inventory update at different speeds from announcements. The 61.5% precision therefore reflects our scenario mix, not a real-world false-positive rate.
 
 <div align="center">
   <img src="reports/baseline_scenario_recall.png" alt="Baseline recall per scenario" width="46%">
@@ -245,16 +251,16 @@ The three hard benign scenarios are flagged **by construction**. They exist to s
 
 ## 🤖 ML detector (added after the baseline)
 
-One `GradientBoostingClassifier`, trained with a chronological split (60% train / 20% validation / 20% test). The decision threshold τ\* = 0.05 was chosen on the **validation** slice only. Every slice contains every scenario and at least 20 forged-origin events.
+One `GradientBoostingClassifier`, trained on a chronological split (60% train / 20% validation / 20% test). The decision threshold τ\* is chosen on the **validation** slice only. Every slice contains every scenario and at least 20 forged-origin events.
 
-**Features (all computed from past data only)**: RFC 6811 state, origin-in-inventory, prefix-length delta vs parent, origin-new-for-prefix, peer-new-for-prefix-origin, more-specific-first-seen, prefix age (capped at 6 h), origin rarity, update rate over 30 minutes, hour of day. No raw prefixes, ASNs or event IDs are used.
+**Features (all computed from past data only):** RFC 6811 state, origin-in-inventory, prefix-length delta vs parent, origin-new-for-prefix, **peer-new-for-prefix-origin**, more-specific-first-seen, prefix age (capped at 6 h), origin rarity, update rate over 30 minutes, hour of day. No raw prefixes, ASNs or event IDs are used, and labels never come from rule outputs.
 
 <div align="center">
   <img src="reports/ml_roc_pr_curves.png" alt="ROC and PR curves" width="46%">
   <img src="reports/ml_feature_importances.png" alt="Feature importances" width="46%">
 </div>
 
-### Recall by anomaly scenario (test slice)
+**Recall by anomaly scenario (test slice, seed 777)**
 
 | Scenario | Rules | ML | Rules OR ML |
 |---|:---:|:---:|:---:|
@@ -263,7 +269,9 @@ One `GradientBoostingClassifier`, trained with a chronological split (60% train 
 | `hijack_after_roa_change` | 100% | 100% | 100% |
 | `loose_maxlength_hijack` (forged origin) | **0%** | **80.95%** | **80.95%** |
 
-### False positives on legitimate scenarios (test slice)
+*Seed 777 is the best of the three seeds for forged-origin recall; the 3-seed figure is about 70% (see above).*
+
+**False positives on legitimate scenarios (test slice, seed 777)**
 
 | Benign scenario | Rules (primary) | ML alone |
 |---|:---:|:---:|
@@ -274,42 +282,43 @@ One `GradientBoostingClassifier`, trained with a chronological split (60% train 
 | `policy_change_roa_lag_inventory_updated` | 16 / 17 | **0 / 17** |
 | `te_more_specific` | 0 / 18 | **8 / 18** |
 
-**Trade-off in plain terms.** ML removes most false positives from DDoS scrubbing and policy-lag cases and recovers forged-origin attacks, but it introduces false positives on traffic-engineering more-specifics (8 / 18) because peer novelty overlaps between attacks and TE events. ML also costs about 40× the per-update latency of the rules (0.60 ms vs 0.0145 ms, measured end to end, one update at a time). Rules OR ML recovers recall but inherits the rules' false positives, so **ML alone is the best option on this data**.
+**Trade-off in plain terms.** ML removes most false positives from DDoS-scrubbing and policy-lag cases and recovers forged-origin attacks, but it adds false positives on traffic-engineering more-specifics (8 / 18) because peer novelty overlaps between attacks and TE events. It also costs about 40× the per-update latency of the rules (0.60 ms vs 0.0145 ms, measured end to end, one update at a time). Rules OR ML restores recall but inherits the rules' false positives, so **ML alone is the best option on this data**.
 
 ---
 
 ## 🛡️ Leakage audit and honesty checks
 
-We treated a perfect score as a warning sign. The ML dataset went through an audit, and the earlier results are preserved in `reports/`.
+We treated a perfect score as a warning sign. The ML dataset went through an audit, and every earlier run is preserved in `reports/`.
 
 | Version | What happened | Preserved in |
 |---|---|---|
-| ML v1 | Precision, recall and F1 all 1.0. The generator leaked: attacks came almost only from a novel peer and the forged origin never appeared in benign traffic | `reports/ml_metrics_v1.json` (reconstructed from the Phase 5 report) |
-| ML v2 (leaky) | Single features still near-perfect, and test slices were missing hard scenarios | `reports/ml_metrics_v2_leaky.json` |
+| ML v1 | Precision, recall and F1 all 1.0. The generator leaked: attacks came almost only from a novel peer and the forged origin never appeared in benign traffic | `reports/ml_metrics_v1.json` *(reconstructed from the Phase 5 report)* |
+| ML v2 (leaky) | Single features still near-perfect; test slices were missing hard scenarios | `reports/ml_metrics_v2_leaky.json` |
 | **ML v3 (current)** | Per-update peer randomisation, legitimate AS64510 carrier traffic, disjoint subprefix pools, capped prefix age, every scenario in every slice | `reports/ml_dataset_v3_changelog.md` |
 
 <div align="center">
   <img src="reports/ml_leakage_audit_auc.png" alt="Single-feature AUC leakage audit" width="560">
 </div>
 
-- **Shuffled-label control** (20 permutations, test AUC): mean **0.5522**, std **0.1954**, min 0.157, max 0.844. The mean is near chance, but the spread is large because positives are clustered in a small slice. This shows **no systematic leakage on average**. It does not prove leakage is absent.
+- **Shuffled-label control** (20 permutations, test AUC): mean **0.5522**, std **0.1954**, min 0.157, max 0.844. The mean is near chance, but the spread is large because positives are clustered in a small slice. It shows **no systematic leakage on average**; it does not prove leakage is absent.
 - **Known residual limit:** `peer_new_for_prefix_origin` has a single-feature AUC of **0.893**, above our ~0.85 goal. We report it rather than hide it.
-- **Seeds 777 / 888 / 999** measure variance across synthetic datasets from one generator. They are **not** external validity.
-- The rule baseline was also audited. Post-baseline generator edits that had hidden background noise were caught, disclosed and preserved in `reports/baseline_v1_raw.txt`.
+- **Seeds 777 / 888 / 999** measure variance across synthetic datasets from one generator, **not** external validity.
+- **The rule baseline was audited too.** Generator edits made after the first baseline run had silently removed background noise (126 → 58 → 0 alerts). This was caught, disclosed and preserved in `reports/baseline_v1_raw.txt`.
+- **Matching and aggregation bugs were found and fixed with regression tests** (a greedy benign matcher, and an easy/hard recall aggregation that summed to more than the number of events).
 
 ---
 
 ## 🧾 Explainable alerts
 
-Every alert, from either detector, is one JSON line in `reports/alerts.jsonl` with deterministic IDs (re-running produces identical output).
+Every alert, from either detector, is one JSON line with a deterministic ID (re-running produces identical output).
 
-**Rule alerts** state which rule fired and why earlier rules in the precedence table did not. **ML alerts** add the score, the threshold and the top three contributing features, computed as per-feature contribution against a training-set background mean, labelled as a non-causal model attribution.
+- **Rule alerts** state which rule fired and why earlier rules in the precedence did not.
+- **ML alerts** add the score, the threshold, the top three contributing features, and a reason that leads with the strongest *operational* signal (for example *"novel transit peer observed for this prefix-origin pair"*). Contributions are a per-feature perturbation against a training-set background mean and are labelled as **model sensitivity, not causation**.
 
 > [!NOTE]
-> **Severity Bands & Operational Triage**:
-> - Alert severity bands (`high`: score $\ge 0.70$, `medium`: $0.30 \le \text{score} < 0.70$, `low`: $\text{score} < 0.30$) are designed as an **operational triage aid** for incident response, not calibrated Bayesian probabilities.
-> - Due to steep decision boundaries in the trained GradientBoosting model, **73 of the 85 ML alerts** on the test slice fall into the `high` severity band, 6 into `medium`, and 6 into `low`.
-> - **RPKI/ROV Scope**: The tool performs RFC 6811 route origin validation against time-aligned ROA records; cryptographic validation of RPKI trust anchors, certificates, and CMS signatures is performed upstream by validator software (e.g. Routinator, rpki-client).
+> **Severity bands for ML alerts** (`high` ≥ 0.70, `medium` 0.30–0.70, `low` < 0.30) are an operational **triage aid**, not calibrated probabilities. Because the model's decision margins are steep, 73 of the 85 ML alerts on the test slice are `high`, 6 `medium` and 6 `low`.
+>
+> **RPKI/ROV scope.** The tool performs RFC 6811 origin validation against time-aligned ROA records. Cryptographic validation of trust anchors, certificates and CMS signatures is performed upstream by validator software (for example Routinator or rpki-client).
 
 <details>
 <summary><b>Example: ML alert on a forged-origin more-specific (true positive)</b></summary>
@@ -326,11 +335,7 @@ Every alert, from either detector, is one JSON line in `reports/alerts.jsonl` wi
   "evidence": {
     "covering_roas": [{"prefix": "198.18.0.0/15", "asn": 64510, "maxLength": 24}],
     "rfc6811_state": "Valid",
-    "inventory_match": {
-      "prefix": "198.18.0.0/15",
-      "owner": "Enterprise Campus",
-      "allowed_origins": [64510]
-    },
+    "inventory_match": {"prefix": "198.18.0.0/15", "owner": "Enterprise Campus", "allowed_origins": [64510]},
     "peer": "206.108.34.1",
     "top_contributing_features": [
       {"feature": "update_rate_30m", "value": 0.0, "direction": "+"},
@@ -341,7 +346,7 @@ Every alert, from either detector, is one JSON line in `reports/alerts.jsonl` wi
   }
 }
 ```
-ROV says **Valid** and the origin is authorized, so the rules stay silent. The ML detector flags it because the announcement arrives via a peer that has never carried this origin for this prefix.
+ROV says **Valid** and the origin is authorised, so the rules stay silent. The ML detector flags it because the announcement arrives via a peer that has never carried this origin for this prefix.
 
 </details>
 
@@ -367,73 +372,66 @@ ROV says **Valid** and the origin is authorized, so the rules stay silent. The M
   }
 }
 ```
-Shown deliberately: the ROA lags a legitimate policy change, so the announcement is RPKI-invalid and looks suspicious. This is the kind of case an analyst has to review.
+Shown deliberately: the ROA lags a legitimate policy change, so the announcement is RPKI-Invalid and looks suspicious. An analyst has to review cases like this.
 
 </details>
 
-### Alert artifact files: `alerts.jsonl` vs `baseline_alerts.jsonl`
+**Alert files**
 
-The monitor produces two complementary alert artifact streams:
-
-| Artifact File | Generating Command | Underlying Dataset | Contents & Purpose |
+| File | Produced by | Dataset | Contents |
 |---|---|---|---|
-| **`reports/baseline_alerts.jsonl`** | `python -m src.evaluate` | Baseline dataset (`data/feed_replay.csv`, 3,164 updates) | **71 baseline operator alerts** + 19 third-party noise alerts evaluated strictly against baseline inventory and ROAs. Used for benchmark metrics in `reports/baseline_metrics.json`. |
-| **`reports/alerts.jsonl`** | `python -m src.explain` | ML dataset (`data/ml_feed_replay.csv`, 31,640 updates) | **848 explainable alerts** combining both detectors: **763 rules alerts** + **85 ML alerts** on the held-out test slice. Every alert carries full evidence (covering ROAs, RFC 6811 state, inventory owner, severity bands, and top-3 feature attributions). |
+| `reports/baseline_alerts.jsonl` | `python -m src.evaluate` | Baseline (`data/feed_replay.csv`) | 71 alerts: 52 operator alerts + 19 third-party noise alerts |
+| `reports/alerts.jsonl` | `python -m src.explain` | ML (`data/ml_feed_replay.csv`) | 848 explainable alerts: 763 from the rules and 85 from the ML detector on the held-out test slice |
 
-### Inspect alerts from the CLI
+**Inspect from the CLI**
 
 ```bash
 python -m src.cli list-alerts --type ORIGIN_HIJACK --severity high
 python -m src.cli explain --alert-id alt-ml-7a7b0b3b
-python -m src.cli explain --alert-id alt-600d62e5
 ```
 
 ---
 
 ## 🖥️ Live demonstration
 
-The monitor features a standalone, 100% offline demonstration command designed for evaluators, mentors, and live presentations:
+A standalone, 100% offline command that never modifies `data/` or `reports/` (a test hashes both folders before and after).
 
 ```bash
-# 1. Full baseline replay with live streaming alerts and final metrics summary
-python -m src.cli demo
-
-# 2. Paced live demonstration (e.g. 1-second delay between alerts)
-python -m src.cli demo --limit 5 --delay 1.0
-
-# 3. Deep-dive into alert #1 with full RPKI/ROV & inventory evidence
-python -m src.cli demo --limit 1 --explain-first
-
-# 4. Head-to-head comparison: baseline replay + ML test slice (highlights forged-origin detection)
-python -m src.cli demo --with-ml --limit 5
+python -m src.cli demo                              # baseline replay, live alerts, final metrics
+python -m src.cli demo --limit 5 --delay 1.0        # paced for a live presentation
+python -m src.cli demo --limit 1 --explain-first    # full evidence for alert #1
+python -m src.cli demo --with-ml --limit 5          # + ML test slice, ground-truth tags, forged-origin catch
 ```
 
-### Walkthrough & Documentation Resources
-- **[📄 5-Minute Mentor Walkthrough Script (`docs/demo_script.md`)](docs/demo_script.md)**: Timed script with exact terminal commands, terminal outputs, and talking points covering the forged-origin blind spot and engineering trade-offs.
-- **[📐 Detection Loop Pseudocode (`docs/pseudocode.md`)](docs/pseudocode.md)**: Formal algorithms matching the real detection engines, strict rule precedence, deduplication, and ML feature attribution.
-- **[📑 Full Technical Project Report (`docs/report.pdf`)](docs/report.pdf)**: Comprehensive 25+ page PDF report detailing RFC 6811 validation, baseline benchmarks, leakage audit controls, and ML evaluation.
+With `--with-ml`, every ML alert is tagged against ground truth (`[TP: scenario]`, `[FP: scenario]` or `[background FP]`), the forged-origin catch the rules miss is highlighted, and a head-to-head table shows seed-777 and 3-seed results side by side.
+
+| Resource | What it is |
+|---|---|
+| [`docs/demo_script.md`](docs/demo_script.md) | Timed 5-minute mentor walkthrough with commands and talking points |
+| [`docs/pseudocode.md`](docs/pseudocode.md) | Detection-loop pseudocode matching the real code |
+| [`docs/report.pdf`](docs/report.pdf) | Full project report in the organisers' structure |
 
 ---
 
 ## 🚀 Quick start
 
 ```bash
-git clone https://github.com/<org>/<team-name>.git
-cd <team-name>
+git clone https://github.com/aiori-hackathon/A3-PS005-TC512.git
+cd A3-PS005-TC512
 
 python -m venv .venv
-# Windows: .venv\Scripts\activate    macOS/Linux: source .venv/bin/activate
+# Windows: .venv\Scripts\activate      macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt
 
-python -m pytest -q                 # run the test suite (92 tests)
-python -m src.cli demo --with-ml    # run live offline demonstration (rules + ML test slice)
-python -m src.evaluate              # rule baseline evaluation -> reports/baseline_*.json + plots
-python -m src.train_ml              # ML dataset, training, audit, comparison -> reports/ml_*.json, comparison.md
-python -m src.explain               # build evidence-based alerts -> reports/alerts.jsonl
-python -m src.cli list-alerts       # browse alerts
+python -m pytest -q                       # 92 tests
+python -m src.cli demo --with-ml --limit 5   # live offline demonstration
+python -m src.evaluate                    # rule baseline -> reports/baseline_*.json + plots
+python -m src.train_ml                    # ML dataset, training, audit, comparison -> reports/ml_*.json, comparison.md
+python -m src.explain                     # evidence-based alerts -> reports/alerts.jsonl
+python -m src.cli list-alerts             # browse alerts
 ```
 
-No network access is required. The core demo runs entirely on the committed synthetic data.
+No network access is required: everything runs on the committed synthetic data.
 
 ## 🗂️ Repository layout
 
@@ -443,53 +441,45 @@ No network access is required. The core demo runs entirely on the committed synt
 ├── config_ml.yaml              # ML dataset (10x scale, own inventory and ROAs)
 ├── requirements.txt
 ├── data/
-│   ├── inventory.csv           # operator prefix inventory (baseline)
-│   ├── roa_snapshots/          # time-stamped ROA snapshots (baseline)
-│   ├── feed_replay.csv         # normalized replay feed with injected events
-│   ├── labels.csv              # ground-truth labels, scenario, difficulty
-│   ├── manifest.json           # generator version, seed, counts
-│   ├── ml_inventory.csv · ml_roa_snapshots/ · ml_feed_replay.csv · ml_labels*.csv
+│   ├── inventory.csv · roa_snapshots/      # baseline inputs
+│   ├── feed_replay.csv · labels.csv · manifest.json
+│   └── ml_inventory.csv · ml_roa_snapshots/ · ml_feed_replay.csv · ml_labels*.csv · ml_manifest*.json
 ├── src/
 │   ├── replay.py               # time-ordered replay and loaders
 │   ├── roa_store.py            # time-aligned ROA lookup
 │   ├── inventory.py            # exact and longest-prefix-match lookup
 │   ├── rov.py                  # RFC 6811 validation with rich result
-│   ├── rules.py                # rule-based baseline, precedence, dedup
+│   ├── rules.py                # rule baseline, precedence, dedup
 │   ├── inject.py               # seeded labelled anomaly and benign generator
 │   ├── evaluate.py             # event-level metrics, bootstrap CI, multi-seed
 │   ├── features.py             # past-only feature extraction
 │   ├── train_ml.py             # time-split model, leakage audit, comparison
 │   ├── explain.py              # evidence builder and alert writer
-│   └── cli.py                  # explain / list-alerts
-├── tests/                      # 92 tests (unit, integration, and demo CLI tests)
-├── reports/
-│   ├── baseline_alerts.jsonl   # 71 baseline alerts on data/feed_replay.csv
-│   ├── alerts.jsonl            # 848 explainable alerts (rules + ML) on ML dataset
-│   ├── baseline_metrics.json   # bitwise reproducible baseline evaluation metrics
-│   ├── ml_metrics.json         # ML evaluation, leakage audit, and multi-seed results
-│   └── comparison.md           # detailed baseline vs ML benchmark report
+│   └── cli.py                  # explain / list-alerts / demo
+├── tests/                      # 92 tests (unit, integration, demo CLI)
+├── reports/                    # metrics JSON, plots, comparison.md, alerts, changelogs
 └── docs/
-    ├── report.pdf              # comprehensive technical project report
-    ├── demo_script.md          # 5-minute timed mentor walkthrough script
-    └── pseudocode.md           # formal detection loop pseudocode (rules + ML)
+    ├── report.pdf · demo_script.md · pseudocode.md
+    └── img/                    # diagrams used in this README
 ```
 
 ## ♻️ Reproducibility
 
-- All randomness is seeded. Seeds are recorded in `data/manifest.json` and `data/ml_manifest*.json`.
-- Re-running `python -m src.evaluate` is idempotent: alert IDs are deterministic and wall-clock timings are written to a separate file (`reports/baseline_timing.json`).
+- All randomness is seeded; seeds are recorded in `data/manifest.json` and `data/ml_manifest*.json`.
+- `python -m src.evaluate` is idempotent: alert IDs are deterministic and wall-clock timings go to a separate file (`reports/baseline_timing.json`).
+- The ML dataset has its own inventory and ROA snapshots, so the baseline reproduces **0.6154 / 0.8000 / 0.6957** exactly.
 - Per-seed ML feeds (`data/ml_feed_seed_*.csv`) are gitignored and regenerated by `python -m src.train_ml` (seeds 777, 888, 999).
-- Every number in this README is produced by code and saved under `reports/`.
 
 ---
 
 ## ⚠️ Limitations (stated plainly)
 
-- **All data is synthetic.** Results show how separable our modelled scenarios are, not accuracy on real operator feeds. Real BGP feeds will be noisier.
-- **Forged-origin detection without AS_PATH is inherently limited.** ML recovers about 70% (59% to 81% across three seeds; seed 777: 81.0% at $\tau^* = 0.050$, seed 888: 59.1% at $\tau^* = 0.070$, seed 999: 71.4% at $\tau^* = 0.090$) using feed metadata alone and adds false positives on TE events.
+- **All data is synthetic.** Results show how separable our modelled scenarios are, not accuracy on real operator feeds, which will be noisier.
+- **Forged-origin detection without AS_PATH is inherently limited.** ML recovers about 70% (59–81% across three seeds) from feed metadata alone and adds false positives on traffic-engineering events.
 - **Hard benign scenarios are flagged by construction**, so baseline precision reflects our scenario mix.
 - **A residual separability limit remains** (`peer_new_for_prefix_origin`, AUC 0.893), and the shuffled-label control has a wide spread (std 0.195) on a small test slice.
-- **Latency:** replay-time alert latency is near zero by construction. We report wall-clock processing time instead.
+- **ML severity bands are uncalibrated** (73 of 85 test alerts are `high`).
+- **Latency:** replay-time alert latency is near zero by construction, so we report wall-clock processing time instead.
 
 ## ✅ Requirement compliance
 
@@ -504,19 +494,24 @@ No network access is required. The core demo runs entirely on the committed synt
 | Precision, recall, alert latency and false positives reported | ✅ |
 | Evidence-based alerts explaining each detection | ✅ |
 | **No** automatic blocking, blackholing or full AS_PATH analysis | ✅ (none implemented) |
+| Report PDF in the organisers' structure, prototype demo with pseudocode | ✅ |
 
-## 📚 References & documentation
+## 🧭 Project journey
 
-- **RFC 6811**: *BGP Prefix Origin Validation*. <https://www.rfc-editor.org/rfc/rfc6811.html>
-- **Project Report**: [`docs/report.pdf`](docs/report.pdf)
-- **Demo Script**: [`docs/demo_script.md`](docs/demo_script.md)
-- **Pseudocode**: [`docs/pseudocode.md`](docs/pseudocode.md)
+<div align="center">
+  <img src="docs/img/timeline.png" alt="Project timeline" width="900">
+</div>
+
+## 📚 References
+
+- **RFC 6811**: *BGP Prefix Origin Validation* — <https://www.rfc-editor.org/rfc/rfc6811.html>
+- **Project report:** [`docs/report.pdf`](docs/report.pdf) · **Demo script:** [`docs/demo_script.md`](docs/demo_script.md) · **Pseudocode:** [`docs/pseudocode.md`](docs/pseudocode.md)
 
 ---
 
 <div align="center">
 
-**Team:** `<team-name>` · **Members:** `<names>` · **Mentors:** AIORI-3 / `aiori-hackathon`
+**Team ThirdEye** · Contributors: [@IamMradul](https://github.com/IamMradul) · [@JRM-Bharat](https://github.com/JRM-Bharat)
 
 *AIORI-3 · PS-005 · Explainable BGP Origin and Subprefix Anomaly Monitor*
 
