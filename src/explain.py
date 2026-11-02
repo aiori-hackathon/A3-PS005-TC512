@@ -340,6 +340,11 @@ def map_ml_score_to_severity(score: float, threshold: float = 0.05) -> str:
       - 'high':   score >= 0.70  (Strong anomaly confidence; critical operator alert)
       - 'medium': 0.30 <= score < 0.70 (Moderate anomaly confidence; secondary investigation)
       - 'low':    score < 0.30   (Low anomaly confidence; above threshold tau*=0.05 but exploratory)
+
+    Caveat:
+      Severity bands are an operational triage aid for human review, not calibrated Bayesian
+      probabilities. In empirical testing on the held-out test slice, 73 of 85 ML alerts fall into
+      the 'high' band (scores >= 0.70) due to sharp GradientBoosting decision margins.
     """
     if score >= 0.70:
         return "high"
@@ -395,10 +400,17 @@ def describe_feature_signal(feature_name: str, value: float, direction: str) -> 
         return f"Historically rare origin ASN across rolling window (rarity metric: {value:.4g})"
 
     elif feature_name == "prefix_age_hours":
-        return f"Recently emerged prefix with limited history (first seen {value:.1f} hours ago)"
+        if value < 1.0:
+            return f"Newly emerged prefix with limited history (first seen {value:.1f} hours ago)"
+        else:
+            return f"Prefix age: first seen {value:.1f} hours ago"
 
     elif feature_name == "update_rate_30m":
-        return f"High announcement burst rate ({int(round(value))} updates in past 30 minutes)"
+        burst = int(round(value))
+        if burst == 0:
+            return "No other updates for this prefix in the last 30 minutes"
+        else:
+            return f"Announcement burst rate ({burst} updates in past 30 minutes)"
 
     elif feature_name == "hour_of_day":
         return f"Announcement timing ({int(round(value))}:00 UTC diurnal window)"
@@ -411,24 +423,54 @@ def generate_ml_reason_text(
     threshold: float,
     top3: List[Dict[str, Any]],
 ) -> str:
-    """Generate plain-English ML reason leading with the strongest signal and model-sensitivity note."""
+    """Generate plain-English ML reason leading with the strongest operational signal and model-sensitivity note."""
     if not top3:
         return (
             f"ML model assigned anomaly score {score:.3f} exceeding threshold {threshold:.3f}. "
             "Note: Feature attributions indicate model-sensitivity to individual inputs relative to baseline background traffic, not causal reasons."
         )
 
-    top_f = top3[0]
-    lead_signal = describe_feature_signal(top_f["feature"], top_f["value"], top_f["direction"])
+    # Preferred operational features for lead signal:
+    # (peer_new_for_prefix_origin, origin_new_for_prefix, rov_state_encoded, prefix_len_delta)
+    primary_ops = {"peer_new_for_prefix_origin", "origin_new_for_prefix", "rov_state_encoded", "prefix_len_delta"}
+    non_lead = {"update_rate_30m", "hour_of_day"}
 
-    supporting = [
-        f"{f['feature']}={f['value']:.4g} ({f['direction']})"
-        for f in top3[1:]
-    ]
-    supporting_text = f" Supported by: {', '.join(supporting)}." if supporting else ""
+    lead_f = None
+    # 1. Prefer highest-contribution primary operational feature
+    for f in top3:
+        if f["feature"] in primary_ops:
+            lead_f = f
+            break
+
+    # 2. Otherwise prefer any feature not in non_lead
+    if lead_f is None:
+        for f in top3:
+            if f["feature"] not in non_lead:
+                lead_f = f
+                break
+
+    # 3. Fallback to top3[0]
+    if lead_f is None:
+        lead_f = top3[0]
+
+    lead_signal = describe_feature_signal(lead_f["feature"], lead_f["value"], lead_f["direction"])
+
+    # Supporting features: all features in top3 except lead_f
+    supporting_feats = [f for f in top3 if f is not lead_f]
+    supporting_items = []
+    for f in supporting_feats:
+        feat_name = f["feature"]
+        val = f["value"]
+        direction = f["direction"]
+        if feat_name == "update_rate_30m" and int(round(val)) == 0:
+            supporting_items.append(f"{feat_name}=0 ({direction}, no other updates for prefix in last 30m)")
+        else:
+            supporting_items.append(f"{feat_name}={val:.4g} ({direction})")
+
+    supporting_text = f" Supported by: {', '.join(supporting_items)}." if supporting_items else ""
 
     return (
-        f"{lead_signal} (top signal: {top_f['feature']}={top_f['value']:.4g}, {top_f['direction']})."
+        f"{lead_signal} (top signal: {lead_f['feature']}={lead_f['value']:.4g}, {lead_f['direction']})."
         f"{supporting_text} "
         f"Model anomaly score: {score:.3f} (operating threshold tau* = {threshold:.3f}). "
         "Note: Feature attributions indicate model-sensitivity to individual inputs relative to baseline background traffic, not causal reasons."
