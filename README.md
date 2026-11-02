@@ -9,7 +9,8 @@
 ![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
 ![RFC 6811](https://img.shields.io/badge/RFC-6811%20ROV-0A66C2)
 ![Detectors](https://img.shields.io/badge/Detectors-Rules%20%2B%20GradientBoosting-8A2BE2)
-![Tests](https://img.shields.io/badge/Tests-84%20passing-2EA44F)
+![Tests](https://img.shields.io/badge/Tests-92%20passing-2EA44F)
+[![Report PDF](https://img.shields.io/badge/Report-docs%2Freport.pdf-red?logo=adobeacrobatreader)](docs/report.pdf)
 ![Explainable](https://img.shields.io/badge/Alerts-Evidence--based-F59E0B)
 ![Scope](https://img.shields.io/badge/Blocking%20%2F%20AS__PATH-Out%20of%20scope-lightgrey)
 
@@ -29,12 +30,13 @@
 8. [ML detector](#-ml-detector-added-after-the-baseline)
 9. [Leakage audit](#-leakage-audit-and-honesty-checks)
 10. [Explainable alerts](#-explainable-alerts)
-11. [Quick start](#-quick-start)
-12. [Repository layout](#-repository-layout)
-13. [Reproducibility](#-reproducibility)
-14. [Limitations](#-limitations-stated-plainly)
-15. [Requirement compliance](#-requirement-compliance)
-16. [References](#-references)
+11. [Live demonstration](#-live-demonstration)
+12. [Quick start](#-quick-start)
+13. [Repository layout](#-repository-layout)
+14. [Reproducibility](#-reproducibility)
+15. [Limitations](#-limitations-stated-plainly)
+16. [Requirement compliance](#-requirement-compliance)
+17. [References & documentation](#-references--documentation)
 
 ---
 
@@ -93,9 +95,9 @@ Bootstrap 95% CI (over events, primary): precision 0.526 to 0.708, recall 0.675 
 | Forged-origin more-specific attack (ROV **Valid**, origin **in inventory**) | Recall |
 |---|:---:|
 | Rule baseline | **0.0%** |
-| ML detector | **≈ 81%** |
+| ML detector | **about 70% (59% to 81% across three seeds)** |
 
-Forged-origin attacks pass both RFC 6811 and the inventory check, and detecting them without AS_PATH analysis is inherently hard. The rules cannot see them by design. ML recovers most of them from feed metadata alone (new peer for this prefix and origin, origin rarity, update behaviour), at a measurable false-positive cost on traffic-engineering events.
+Forged-origin attacks pass both RFC 6811 and the inventory check, and detecting them without AS_PATH analysis is inherently hard. The rules cannot see them by design. ML recovers most of them from feed metadata alone (new peer for this prefix and origin, origin rarity, update behaviour) — achieving about 70% (59% to 81% across three seeds; seed 777: 81.0% at $\tau^* = 0.050$, seed 888: 59.1% at $\tau^* = 0.070$, seed 999: 71.4% at $\tau^* = 0.090$) — at a measurable false-positive cost on traffic-engineering events.
 
 <div align="center">
   <img src="reports/ml_baseline_hybrid_comparison.png" alt="Baseline vs ML vs Hybrid comparison" width="760">
@@ -303,6 +305,12 @@ Every alert, from either detector, is one JSON line in `reports/alerts.jsonl` wi
 
 **Rule alerts** state which rule fired and why earlier rules in the precedence table did not. **ML alerts** add the score, the threshold and the top three contributing features, computed as per-feature contribution against a training-set background mean, labelled as a non-causal model attribution.
 
+> [!NOTE]
+> **Severity Bands & Operational Triage**:
+> - Alert severity bands (`high`: score $\ge 0.70$, `medium`: $0.30 \le \text{score} < 0.70$, `low`: $\text{score} < 0.30$) are designed as an **operational triage aid** for incident response, not calibrated Bayesian probabilities.
+> - Due to steep decision boundaries in the trained GradientBoosting model, **73 of the 85 ML alerts** on the test slice fall into the `high` severity band, 6 into `medium`, and 6 into `low`.
+> - **RPKI/ROV Scope**: The tool performs RFC 6811 route origin validation against time-aligned ROA records; cryptographic validation of RPKI trust anchors, certificates, and CMS signatures is performed upstream by validator software (e.g. Routinator, rpki-client).
+
 <details>
 <summary><b>Example: ML alert on a forged-origin more-specific (true positive)</b></summary>
 
@@ -363,12 +371,47 @@ Shown deliberately: the ROA lags a legitimate policy change, so the announcement
 
 </details>
 
+### Alert artifact files: `alerts.jsonl` vs `baseline_alerts.jsonl`
+
+The monitor produces two complementary alert artifact streams:
+
+| Artifact File | Generating Command | Underlying Dataset | Contents & Purpose |
+|---|---|---|---|
+| **`reports/baseline_alerts.jsonl`** | `python -m src.evaluate` | Baseline dataset (`data/feed_replay.csv`, 3,164 updates) | **71 baseline operator alerts** + 19 third-party noise alerts evaluated strictly against baseline inventory and ROAs. Used for benchmark metrics in `reports/baseline_metrics.json`. |
+| **`reports/alerts.jsonl`** | `python -m src.explain` | ML dataset (`data/ml_feed_replay.csv`, 31,640 updates) | **848 explainable alerts** combining both detectors: **763 rules alerts** + **85 ML alerts** on the held-out test slice. Every alert carries full evidence (covering ROAs, RFC 6811 state, inventory owner, severity bands, and top-3 feature attributions). |
+
 ### Inspect alerts from the CLI
 
 ```bash
 python -m src.cli list-alerts --type ORIGIN_HIJACK --severity high
 python -m src.cli explain --alert-id alt-ml-7a7b0b3b
+python -m src.cli explain --alert-id alt-600d62e5
 ```
+
+---
+
+## 🖥️ Live demonstration
+
+The monitor features a standalone, 100% offline demonstration command designed for evaluators, mentors, and live presentations:
+
+```bash
+# 1. Full baseline replay with live streaming alerts and final metrics summary
+python -m src.cli demo
+
+# 2. Paced live demonstration (e.g. 1-second delay between alerts)
+python -m src.cli demo --limit 5 --delay 1.0
+
+# 3. Deep-dive into alert #1 with full RPKI/ROV & inventory evidence
+python -m src.cli demo --limit 1 --explain-first
+
+# 4. Head-to-head comparison: baseline replay + ML test slice (highlights forged-origin detection)
+python -m src.cli demo --with-ml --limit 5
+```
+
+### Walkthrough & Documentation Resources
+- **[📄 5-Minute Mentor Walkthrough Script (`docs/demo_script.md`)](docs/demo_script.md)**: Timed script with exact terminal commands, terminal outputs, and talking points covering the forged-origin blind spot and engineering trade-offs.
+- **[📐 Detection Loop Pseudocode (`docs/pseudocode.md`)](docs/pseudocode.md)**: Formal algorithms matching the real detection engines, strict rule precedence, deduplication, and ML feature attribution.
+- **[📑 Full Technical Project Report (`docs/report.pdf`)](docs/report.pdf)**: Comprehensive 25+ page PDF report detailing RFC 6811 validation, baseline benchmarks, leakage audit controls, and ML evaluation.
 
 ---
 
@@ -382,7 +425,8 @@ python -m venv .venv
 # Windows: .venv\Scripts\activate    macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt
 
-python -m pytest -q                 # run the test suite
+python -m pytest -q                 # run the test suite (92 tests)
+python -m src.cli demo --with-ml    # run live offline demonstration (rules + ML test slice)
 python -m src.evaluate              # rule baseline evaluation -> reports/baseline_*.json + plots
 python -m src.train_ml              # ML dataset, training, audit, comparison -> reports/ml_*.json, comparison.md
 python -m src.explain               # build evidence-based alerts -> reports/alerts.jsonl
@@ -417,9 +461,17 @@ No network access is required. The core demo runs entirely on the committed synt
 │   ├── train_ml.py             # time-split model, leakage audit, comparison
 │   ├── explain.py              # evidence builder and alert writer
 │   └── cli.py                  # explain / list-alerts
-├── tests/                      # 84 tests
-├── reports/                    # metrics JSON, plots, comparison.md, alerts.jsonl, changelogs
-└── docs/                       # presentation and report
+├── tests/                      # 92 tests (unit, integration, and demo CLI tests)
+├── reports/
+│   ├── baseline_alerts.jsonl   # 71 baseline alerts on data/feed_replay.csv
+│   ├── alerts.jsonl            # 848 explainable alerts (rules + ML) on ML dataset
+│   ├── baseline_metrics.json   # bitwise reproducible baseline evaluation metrics
+│   ├── ml_metrics.json         # ML evaluation, leakage audit, and multi-seed results
+│   └── comparison.md           # detailed baseline vs ML benchmark report
+└── docs/
+    ├── report.pdf              # comprehensive technical project report
+    ├── demo_script.md          # 5-minute timed mentor walkthrough script
+    └── pseudocode.md           # formal detection loop pseudocode (rules + ML)
 ```
 
 ## ♻️ Reproducibility
@@ -434,7 +486,7 @@ No network access is required. The core demo runs entirely on the committed synt
 ## ⚠️ Limitations (stated plainly)
 
 - **All data is synthetic.** Results show how separable our modelled scenarios are, not accuracy on real operator feeds. Real BGP feeds will be noisier.
-- **Forged-origin detection without AS_PATH is inherently limited.** ML recovers about 81% using feed metadata alone and adds false positives on TE events.
+- **Forged-origin detection without AS_PATH is inherently limited.** ML recovers about 70% (59% to 81% across three seeds; seed 777: 81.0% at $\tau^* = 0.050$, seed 888: 59.1% at $\tau^* = 0.070$, seed 999: 71.4% at $\tau^* = 0.090$) using feed metadata alone and adds false positives on TE events.
 - **Hard benign scenarios are flagged by construction**, so baseline precision reflects our scenario mix.
 - **A residual separability limit remains** (`peer_new_for_prefix_origin`, AUC 0.893), and the shuffled-label control has a wide spread (std 0.195) on a small test slice.
 - **Latency:** replay-time alert latency is near zero by construction. We report wall-clock processing time instead.
@@ -453,9 +505,12 @@ No network access is required. The core demo runs entirely on the committed synt
 | Evidence-based alerts explaining each detection | ✅ |
 | **No** automatic blocking, blackholing or full AS_PATH analysis | ✅ (none implemented) |
 
-## 📚 References
+## 📚 References & documentation
 
-- RFC 6811: *BGP Prefix Origin Validation*. <https://www.rfc-editor.org/rfc/rfc6811.html>
+- **RFC 6811**: *BGP Prefix Origin Validation*. <https://www.rfc-editor.org/rfc/rfc6811.html>
+- **Project Report**: [`docs/report.pdf`](docs/report.pdf)
+- **Demo Script**: [`docs/demo_script.md`](docs/demo_script.md)
+- **Pseudocode**: [`docs/pseudocode.md`](docs/pseudocode.md)
 
 ---
 
