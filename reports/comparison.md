@@ -118,7 +118,7 @@ The standalone Precision-Recall curve with operating point $\tau^*$ is saved at 
 
 1. **Forged-Origin Hijack Detection (The Primary ML Win)**:
    - RFC 6811 ROV and inventory rules are **fundamentally blind (0.0% recall)** to forged-origin subprefixes (`loose_maxlength_hijack`) because the attacker announces a more-specific using the victim's authorized ASN.
-   - The ML model detects forged-origin attacks without rule alerts, achieving high recall by learning peer novelty, length deltas, and arrival dynamics.
+   - The ML model detects forged-origin attacks without rule alerts, achieving about 70% (59% to 81% across three seeds; seed 777: 81.0% at $\tau^* = 0.0500$, seed 888: 59.1% at $\tau^* = 0.0700$, seed 999: 71.4% at $\tau^* = 0.0900$) by learning peer novelty, length deltas, and arrival dynamics.
 2. **False Positive Trade-Offs**:
    - Under Primary Policy, the rule baseline triggers false positives on DDoS scrubbing (`INVENTORY_MISMATCH`) and policy lag.
    - The ML model dramatically suppresses DDoS scrubbing false positives while retaining high precision.
