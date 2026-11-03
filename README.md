@@ -9,7 +9,7 @@
 ![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
 ![RFC 6811](https://img.shields.io/badge/RFC-6811%20ROV-0A66C2)
 ![Detectors](https://img.shields.io/badge/Detectors-Rules%20%2B%20GradientBoosting-8A2BE2)
-![Tests](https://img.shields.io/badge/Tests-92%20passing-2EA44F)
+![Tests](https://img.shields.io/badge/Tests-100%20passing-2EA44F)
 ![Offline](https://img.shields.io/badge/Demo-100%25%20offline-0F766E)
 ![Explainable](https://img.shields.io/badge/Alerts-Evidence--based-F59E0B)
 [![Report PDF](https://img.shields.io/badge/Report-docs%2Freport.pdf-D64545)](docs/report.pdf)
@@ -24,7 +24,7 @@
 
 | 🎯 Rule baseline F1 | 🤖 ML detector F1 | 🕳️ Forged-origin recall | ✅ Tests |
 |:---:|:---:|:---:|:---:|
-| **0.6957** | **0.9104 ± 0.0087** | rules **0%** → ML **≈ 70%** *(59–81% across 3 seeds)* | **92** passing |
+| **0.6957** | **0.9104 ± 0.0087** | rules **0%** → ML **≈ 70%** *(59–81% across 3 seeds)* | **100** passing |
 
 > Every number in this README is produced by code in this repository and saved under `reports/`. The data is **synthetic**, so read the results as *how well each detector separates the scenarios we modelled*, not as real-world accuracy. See [Limitations](#-limitations-stated-plainly).
 
@@ -43,13 +43,14 @@
 9. [Leakage audit and honesty checks](#-leakage-audit-and-honesty-checks)
 10. [Explainable alerts](#-explainable-alerts)
 11. [Live demonstration](#-live-demonstration)
-12. [Quick start](#-quick-start)
-13. [Repository layout](#-repository-layout)
-14. [Reproducibility](#-reproducibility)
-15. [Limitations](#-limitations-stated-plainly)
-16. [Requirement compliance](#-requirement-compliance)
-17. [Project journey](#-project-journey)
-18. [References](#-references)
+12. [Dashboard](#-dashboard-optional)
+13. [Quick start](#-quick-start)
+14. [Repository layout](#-repository-layout)
+15. [Reproducibility](#-reproducibility)
+16. [Limitations](#-limitations-stated-plainly)
+17. [Requirement compliance](#-requirement-compliance)
+18. [Project journey](#-project-journey)
+19. [References](#-references)
 
 ---
 
@@ -413,6 +414,26 @@ With `--with-ml`, every ML alert is tagged against ground truth (`[TP: scenario]
 
 ---
 
+## 📈 Dashboard (optional)
+
+A read-only Streamlit dashboard for exploring the saved results. It **only reads** `reports/` and `data/*labels.csv`, never recomputes metrics or writes files, and works offline. Its dependencies live in a separate `requirements-dashboard.txt`, so the core project and its tests are unaffected.
+
+```bash
+pip install -r requirements-dashboard.txt
+python -m streamlit run app/dashboard.py
+```
+
+| Page | What it shows |
+|---|---|
+| **Overview** | Headline cards and a banner that the data is synthetic |
+| **Rules vs ML** | Metric tables and charts, per-scenario recall, false positives per benign scenario, seed selector (777 / 888 / 999) |
+| **Alert explorer** | Filter alerts by detector, type, severity and prefix; click one to see the full evidence |
+| **Forged-origin spotlight** | `alt-ml-7a7b0b3b` next to "the rules raise no alert", with its ground-truth tag |
+| **Leakage audit** | Single-feature AUC, shuffled-label control, v1 / v2 / v3 history |
+| **Timeline replay** | Cumulative alerts by type over replay time |
+
+---
+
 ## 🚀 Quick start
 
 ```bash
@@ -423,12 +444,16 @@ python -m venv .venv
 # Windows: .venv\Scripts\activate      macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt
 
-python -m pytest -q                       # 92 tests
+python -m pytest -q                       # 100 tests
 python -m src.cli demo --with-ml --limit 5   # live offline demonstration
 python -m src.evaluate                    # rule baseline -> reports/baseline_*.json + plots
 python -m src.train_ml                    # ML dataset, training, audit, comparison -> reports/ml_*.json, comparison.md
 python -m src.explain                     # evidence-based alerts -> reports/alerts.jsonl
 python -m src.cli list-alerts             # browse alerts
+
+# optional dashboard
+pip install -r requirements-dashboard.txt
+python -m streamlit run app/dashboard.py
 ```
 
 No network access is required: everything runs on the committed synthetic data.
@@ -444,6 +469,8 @@ No network access is required: everything runs on the committed synthetic data.
 │   ├── inventory.csv · roa_snapshots/      # baseline inputs
 │   ├── feed_replay.csv · labels.csv · manifest.json
 │   └── ml_inventory.csv · ml_roa_snapshots/ · ml_feed_replay.csv · ml_labels*.csv · ml_manifest*.json
+├── app/dashboard.py            # optional read-only Streamlit dashboard
+├── requirements-dashboard.txt
 ├── src/
 │   ├── replay.py               # time-ordered replay and loaders
 │   ├── roa_store.py            # time-aligned ROA lookup
@@ -456,7 +483,7 @@ No network access is required: everything runs on the committed synthetic data.
 │   ├── train_ml.py             # time-split model, leakage audit, comparison
 │   ├── explain.py              # evidence builder and alert writer
 │   └── cli.py                  # explain / list-alerts / demo
-├── tests/                      # 92 tests (unit, integration, demo CLI)
+├── tests/                      # 100 tests (unit, integration, demo CLI)
 ├── reports/                    # metrics JSON, plots, comparison.md, alerts, changelogs
 └── docs/
     ├── report.pdf · demo_script.md · pseudocode.md
